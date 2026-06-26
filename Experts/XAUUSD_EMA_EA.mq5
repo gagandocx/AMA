@@ -26,7 +26,7 @@ input double   MinLotSize       = 0.20;         // Minimum lot size
 input double   LotPerBalance    = 0.20;         // Lots per LotBalanceStep of balance
 input double   LotBalanceStep   = 1000.0;       // Balance increment for lot increase (e.g. every $1000)
 input double   MaxLotSize       = 10.0;         // Maximum lot size cap
-input double   MaxEMADistance   = 50.0;         // Max distance from EMA in points (discount zone filter)
+input double   MaxEMADistance   = 500.0;        // Max distance from EMA in points (discount zone filter, 500 pts = $5.00 for XAUUSD)
 input int      SwingLookback    = 100;          // How many bars back to search for swing high/low
 input int      SwingBars        = 2;            // Number of bars on each side for fractal detection (Williams fractal)
 input double   SLBufferPoints   = 50.0;         // Buffer in points beyond swing level for SL (50 pts = $0.50 for XAUUSD)
@@ -36,6 +36,7 @@ input int      MagicNumber      = 123456;       // Magic number for order identi
 int            emaHandle;                       // Handle for the EMA indicator
 datetime       lastBarTime;                     // Track last bar time to detect new bars
 bool           tradeOpenedThisBar;             // Prevent multiple opens on same bar
+datetime       lastWaitingLogTime;             // Track last "waiting for new bar" log time
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                     |
@@ -70,6 +71,7 @@ int OnInit()
 
    lastBarTime = 0;
    tradeOpenedThisBar = false;
+   lastWaitingLogTime = 0;
 
    Print("XAUUSD EMA EA initialized successfully.");
    Print("EMA Period: ", EMA_Period, " | Shift: ", EMA_Shift, " | Method: EMA | Apply: Close");
@@ -103,10 +105,20 @@ void OnTick()
    //--- Detect new bar
    datetime currentBarTime = iTime(_Symbol, PERIOD_M1, 0);
    if(currentBarTime == lastBarTime)
+   {
+      //--- Log "Waiting for new bar..." once per minute
+      datetime now = TimeCurrent();
+      if(now - lastWaitingLogTime >= 60)
+      {
+         Print("[DIAG] Waiting for new bar... (last bar: ", TimeToString(lastBarTime, TIME_DATE|TIME_MINUTES), ")");
+         lastWaitingLogTime = now;
+      }
       return;  // Not a new bar, skip
+   }
 
    lastBarTime = currentBarTime;
    tradeOpenedThisBar = false;
+   Print("[DIAG] ===== New bar detected at ", TimeToString(currentBarTime, TIME_DATE|TIME_MINUTES|TIME_SECONDS), " =====");
 
    //--- Check if we have an open position - only close at candle close if in profit
    if(HasOpenPosition())
@@ -114,11 +126,11 @@ void OnTick()
       if(IsPositionInProfit())
       {
          CloseOpenPosition();
-         Print("Position closed at candle close - was in profit.");
+         Print("[DIAG] Position closed at candle close - was in profit.");
       }
       else
       {
-         Print("Position in loss - holding. Waiting for next candle close or SL hit.");
+         Print("[DIAG] Position in loss - holding. Waiting for next candle close or SL hit.");
       }
       return;  // Either closed in profit or holding in loss - do not open new trade
    }
@@ -129,7 +141,7 @@ void OnTick()
    ArraySetAsSeries(emaValues, true);
    if(CopyBuffer(emaHandle, 0, 1, 3, emaValues) < 3)
    {
-      Print("Failed to copy EMA buffer. Error: ", GetLastError());
+      Print("[DIAG] Failed to copy EMA buffer. Error: ", GetLastError());
       return;
    }
 
@@ -150,46 +162,95 @@ void OnTick()
    if(CopyBuffer(emaHandle, 0, 0, 1, emaCurrentBar) >= 1)
       currentEMA = emaCurrentBar[0];
    else
+   {
+      Print("[DIAG] Failed to copy current EMA buffer. Skipping.");
       return;
+   }
 
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
 
+   //--- Determine signal direction
+   bool sellSignal = (close1 < ema1 && close2 < ema2 && currentBid < currentEMA);
+   bool buySignal  = (close1 > ema1 && close2 > ema2 && currentAsk > currentEMA);
+
+   //--- Log signal check details
+   string signalStr = "NONE";
+   if(sellSignal) signalStr = "SELL";
+   else if(buySignal) signalStr = "BUY";
+
+   Print("[DIAG] Signal check: close1=", DoubleToString(close1, 2),
+         " ema1=", DoubleToString(ema1, 2),
+         " close2=", DoubleToString(close2, 2),
+         " ema2=", DoubleToString(ema2, 2),
+         " -> ", signalStr);
+   Print("[DIAG]   CurrentAsk=", DoubleToString(currentAsk, 2),
+         " CurrentBid=", DoubleToString(currentBid, 2),
+         " CurrentEMA=", DoubleToString(currentEMA, 2));
+
+   if(!sellSignal && !buySignal)
+   {
+      Print("[DIAG] No signal conditions met. Waiting for next bar.");
+      return;
+   }
+
    //--- SELL Signal: 2 consecutive candles close below EMA AND current price is below EMA
-   if(close1 < ema1 && close2 < ema2 && currentBid < currentEMA)
+   if(sellSignal)
    {
       //--- Check discount zone: price should be near EMA (not too far below)
       double distanceFromEMA = MathAbs(currentBid - currentEMA) / point;
+      Print("[DIAG] SELL discount zone check: Distance from EMA = ", DoubleToString(distanceFromEMA, 1),
+            " points (max allowed: ", DoubleToString(MaxEMADistance, 1), ")");
+
       if(distanceFromEMA <= MaxEMADistance)
       {
+         Print("[DIAG] Discount zone PASSED. Looking for swing high for SL...");
          double sl = FindLastSwingHigh();  // SL = Most recent swing high (fractal high)
          if(sl == 0)
          {
-            Print("No swing high found within lookback. Skipping SELL.");
+            Print("[DIAG] No swing high found within lookback. Skipping SELL.");
          }
          else
          {
             sl += SLBufferPoints * point;  // Add buffer above swing high
+            Print("[DIAG] Opening SELL with SL=", DoubleToString(sl, 2));
             OpenSell(sl);
          }
       }
+      else
+      {
+         Print("[DIAG] Discount zone FAILED. Price too far from EMA. Distance=",
+               DoubleToString(distanceFromEMA, 1), " > MaxAllowed=", DoubleToString(MaxEMADistance, 1),
+               ". Trade SKIPPED.");
+      }
    }
    //--- BUY Signal: 2 consecutive candles close above EMA AND current price is above EMA
-   else if(close1 > ema1 && close2 > ema2 && currentAsk > currentEMA)
+   else if(buySignal)
    {
       //--- Check discount zone: price should be near EMA (not too far above)
       double distanceFromEMA = MathAbs(currentAsk - currentEMA) / point;
+      Print("[DIAG] BUY discount zone check: Distance from EMA = ", DoubleToString(distanceFromEMA, 1),
+            " points (max allowed: ", DoubleToString(MaxEMADistance, 1), ")");
+
       if(distanceFromEMA <= MaxEMADistance)
       {
+         Print("[DIAG] Discount zone PASSED. Looking for swing low for SL...");
          double sl = FindLastSwingLow();  // SL = Most recent swing low (fractal low)
          if(sl == 0)
          {
-            Print("No swing low found within lookback. Skipping BUY.");
+            Print("[DIAG] No swing low found within lookback. Skipping BUY.");
          }
          else
          {
             sl -= SLBufferPoints * point;  // Add buffer below swing low
+            Print("[DIAG] Opening BUY with SL=", DoubleToString(sl, 2));
             OpenBuy(sl);
          }
+      }
+      else
+      {
+         Print("[DIAG] Discount zone FAILED. Price too far from EMA. Distance=",
+               DoubleToString(distanceFromEMA, 1), " > MaxAllowed=", DoubleToString(MaxEMADistance, 1),
+               ". Trade SKIPPED.");
       }
    }
 }
