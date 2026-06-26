@@ -27,9 +27,9 @@ input double   LotPerBalance    = 0.20;         // Lots per LotBalanceStep of ba
 input double   LotBalanceStep   = 1000.0;       // Balance increment for lot increase (e.g. every $1000)
 input double   MaxLotSize       = 10.0;         // Maximum lot size cap
 input double   MaxEMADistance   = 50.0;         // Max distance from EMA in points (discount zone filter)
-input int      SwingLookback    = 50;           // How many bars back to search for swing high/low
-input int      SwingBars        = 2;            // Number of bars on each side for fractal detection
-input double   SLBufferPoints   = 5.0;          // Buffer in points beyond swing level for SL
+input int      SwingLookback    = 100;          // How many bars back to search for swing high/low
+input int      SwingBars        = 2;            // Number of bars on each side for fractal detection (Williams fractal)
+input double   SLBufferPoints   = 50.0;         // Buffer in points beyond swing level for SL (50 pts = $0.50 for XAUUSD)
 input int      MagicNumber      = 123456;       // Magic number for order identification
 
 //--- Global variables
@@ -196,8 +196,8 @@ void OnTick()
 
 //+------------------------------------------------------------------+
 //| Find the most recent swing high (fractal high)                     |
-//| A fractal high is a bar whose high is greater than the highs of    |
-//| SwingBars bars on each side.                                        |
+//| A fractal high is a bar whose high is STRICTLY greater than the    |
+//| highs of SwingBars bars on each side (true Williams fractal).      |
 //| Returns 0 if no swing high found within lookback range.            |
 //+------------------------------------------------------------------+
 double FindLastSwingHigh()
@@ -207,18 +207,20 @@ double FindLastSwingHigh()
    int startBar = SwingBars + 1;
    int endBar   = SwingLookback;
 
+   Print("FindLastSwingHigh: Searching bars ", startBar, " to ", endBar, " with SwingBars=", SwingBars);
+
    for(int i = startBar; i <= endBar; i++)
    {
       double highI = iHigh(_Symbol, PERIOD_M1, i);
       bool isFractal = true;
 
-      //--- Check SwingBars bars on each side
+      //--- Check SwingBars bars on each side - STRICT greater than required
       for(int j = 1; j <= SwingBars; j++)
       {
          double highLeft  = iHigh(_Symbol, PERIOD_M1, i + j);  // Older bars (left side)
          double highRight = iHigh(_Symbol, PERIOD_M1, i - j);  // Newer bars (right side)
 
-         if(highI < highLeft || highI < highRight)
+         if(highI <= highLeft || highI <= highRight)
          {
             isFractal = false;
             break;
@@ -227,18 +229,28 @@ double FindLastSwingHigh()
 
       if(isFractal)
       {
-         Print("Swing High found at bar ", i, " High: ", highI);
+         //--- Log detailed info about the fractal found
+         Print("=== SWING HIGH FOUND ===");
+         Print("  Bar index: ", i, " | High: ", highI);
+         Print("  Time: ", TimeToString(iTime(_Symbol, PERIOD_M1, i)));
+         for(int j = 1; j <= SwingBars; j++)
+         {
+            Print("  Left[", j, "] bar ", i+j, " high=", iHigh(_Symbol, PERIOD_M1, i+j),
+                  " | Right[", j, "] bar ", i-j, " high=", iHigh(_Symbol, PERIOD_M1, i-j));
+         }
+         Print("========================");
          return highI;
       }
    }
 
+   Print("FindLastSwingHigh: No fractal high found within ", endBar, " bars.");
    return 0;  // No swing high found
 }
 
 //+------------------------------------------------------------------+
 //| Find the most recent swing low (fractal low)                       |
-//| A fractal low is a bar whose low is lower than the lows of         |
-//| SwingBars bars on each side.                                        |
+//| A fractal low is a bar whose low is STRICTLY lower than the lows   |
+//| of SwingBars bars on each side (true Williams fractal).            |
 //| Returns 0 if no swing low found within lookback range.             |
 //+------------------------------------------------------------------+
 double FindLastSwingLow()
@@ -247,18 +259,20 @@ double FindLastSwingLow()
    int startBar = SwingBars + 1;
    int endBar   = SwingLookback;
 
+   Print("FindLastSwingLow: Searching bars ", startBar, " to ", endBar, " with SwingBars=", SwingBars);
+
    for(int i = startBar; i <= endBar; i++)
    {
       double lowI = iLow(_Symbol, PERIOD_M1, i);
       bool isFractal = true;
 
-      //--- Check SwingBars bars on each side
+      //--- Check SwingBars bars on each side - STRICT less than required
       for(int j = 1; j <= SwingBars; j++)
       {
          double lowLeft  = iLow(_Symbol, PERIOD_M1, i + j);  // Older bars (left side)
          double lowRight = iLow(_Symbol, PERIOD_M1, i - j);  // Newer bars (right side)
 
-         if(lowI > lowLeft || lowI > lowRight)
+         if(lowI >= lowLeft || lowI >= lowRight)
          {
             isFractal = false;
             break;
@@ -267,11 +281,21 @@ double FindLastSwingLow()
 
       if(isFractal)
       {
-         Print("Swing Low found at bar ", i, " Low: ", lowI);
+         //--- Log detailed info about the fractal found
+         Print("=== SWING LOW FOUND ===");
+         Print("  Bar index: ", i, " | Low: ", lowI);
+         Print("  Time: ", TimeToString(iTime(_Symbol, PERIOD_M1, i)));
+         for(int j = 1; j <= SwingBars; j++)
+         {
+            Print("  Left[", j, "] bar ", i+j, " low=", iLow(_Symbol, PERIOD_M1, i+j),
+                  " | Right[", j, "] bar ", i-j, " low=", iLow(_Symbol, PERIOD_M1, i-j));
+         }
+         Print("========================");
          return lowI;
       }
    }
 
+   Print("FindLastSwingLow: No fractal low found within ", endBar, " bars.");
    return 0;  // No swing low found
 }
 
@@ -443,6 +467,8 @@ void OpenBuy(double sl)
    {
       Print("BUY order opened. Price: ", result.price, " SL: ", sl,
             " Lots: ", request.volume, " Ticket: ", result.order);
+      Print("  >> SL placed at swing low level (with ", SLBufferPoints, " pts buffer). Entry=", result.price, " SL=", sl,
+            " Distance=", NormalizeDouble(MathAbs(result.price - sl) / SymbolInfoDouble(_Symbol, SYMBOL_POINT), 1), " pts");
       tradeOpenedThisBar = true;
    }
 }
@@ -483,6 +509,8 @@ void OpenSell(double sl)
    {
       Print("SELL order opened. Price: ", result.price, " SL: ", sl,
             " Lots: ", request.volume, " Ticket: ", result.order);
+      Print("  >> SL placed at swing high level (with ", SLBufferPoints, " pts buffer). Entry=", result.price, " SL=", sl,
+            " Distance=", NormalizeDouble(MathAbs(sl - result.price) / SymbolInfoDouble(_Symbol, SYMBOL_POINT), 1), " pts");
       tradeOpenedThisBar = true;
    }
 }
