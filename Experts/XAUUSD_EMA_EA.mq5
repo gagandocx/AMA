@@ -5,10 +5,10 @@
 //| Trades XAUUSD on the 1-minute chart using a 9-period EMA.         |
 //| BUY only ABOVE EMA: 2 consecutive M1 candles close above EMA      |
 //|       and price is above EMA -> buy on next candle open.           |
-//|       SL = Low of previous candle.                                 |
+//|       SL = Most recent swing low (fractal low).                    |
 //| SELL only BELOW EMA: 2 consecutive M1 candles close below EMA      |
 //|       and price is below EMA -> sell on next candle open.          |
-//|       SL = High of previous candle.                                |
+//|       SL = Most recent swing high (fractal high).                  |
 //| TP:   None fixed. Trade closes at candle close ONLY if in profit.  |
 //|       If in loss, trade stays open until SL hits or next candle     |
 //|       close is in profit.                                           |
@@ -27,6 +27,9 @@ input double   LotPerBalance    = 0.20;         // Lots per LotBalanceStep of ba
 input double   LotBalanceStep   = 1000.0;       // Balance increment for lot increase (e.g. every $1000)
 input double   MaxLotSize       = 10.0;         // Maximum lot size cap
 input double   MaxEMADistance   = 50.0;         // Max distance from EMA in points (discount zone filter)
+input int      SwingLookback    = 50;           // How many bars back to search for swing high/low
+input int      SwingBars        = 2;            // Number of bars on each side for fractal detection
+input double   SLBufferPoints   = 5.0;          // Buffer in points beyond swing level for SL
 input int      MagicNumber      = 123456;       // Magic number for order identification
 
 //--- Global variables
@@ -134,10 +137,6 @@ void OnTick()
    double close1 = iClose(_Symbol, PERIOD_M1, 1);  // Most recent completed bar
    double close2 = iClose(_Symbol, PERIOD_M1, 2);  // Bar before that
 
-   //--- Get high/low of the most recent completed bar (for SL)
-   double high1 = iHigh(_Symbol, PERIOD_M1, 1);
-   double low1  = iLow(_Symbol, PERIOD_M1, 1);
-
    //--- EMA values corresponding to bars
    double ema1 = emaValues[0];  // EMA at bar index 1 (most recent completed)
    double ema2 = emaValues[1];  // EMA at bar index 2
@@ -162,8 +161,16 @@ void OnTick()
       double distanceFromEMA = MathAbs(currentBid - currentEMA) / point;
       if(distanceFromEMA <= MaxEMADistance)
       {
-         double sl = high1;  // SL = High of previous candle
-         OpenSell(sl);
+         double sl = FindLastSwingHigh();  // SL = Most recent swing high (fractal high)
+         if(sl == 0)
+         {
+            Print("No swing high found within lookback. Skipping SELL.");
+         }
+         else
+         {
+            sl += SLBufferPoints * point;  // Add buffer above swing high
+            OpenSell(sl);
+         }
       }
    }
    //--- BUY Signal: 2 consecutive candles close above EMA AND current price is above EMA
@@ -173,10 +180,99 @@ void OnTick()
       double distanceFromEMA = MathAbs(currentAsk - currentEMA) / point;
       if(distanceFromEMA <= MaxEMADistance)
       {
-         double sl = low1;  // SL = Low of previous candle
-         OpenBuy(sl);
+         double sl = FindLastSwingLow();  // SL = Most recent swing low (fractal low)
+         if(sl == 0)
+         {
+            Print("No swing low found within lookback. Skipping BUY.");
+         }
+         else
+         {
+            sl -= SLBufferPoints * point;  // Add buffer below swing low
+            OpenBuy(sl);
+         }
       }
    }
+}
+
+//+------------------------------------------------------------------+
+//| Find the most recent swing high (fractal high)                     |
+//| A fractal high is a bar whose high is greater than the highs of    |
+//| SwingBars bars on each side.                                        |
+//| Returns 0 if no swing high found within lookback range.            |
+//+------------------------------------------------------------------+
+double FindLastSwingHigh()
+{
+   //--- Start searching from bar index SwingBars+1 (need SwingBars bars on the right/recent side)
+   //--- The minimum bar that can be a confirmed fractal is SwingBars+1 (bars 1..SwingBars are on its right)
+   int startBar = SwingBars + 1;
+   int endBar   = SwingLookback;
+
+   for(int i = startBar; i <= endBar; i++)
+   {
+      double highI = iHigh(_Symbol, PERIOD_M1, i);
+      bool isFractal = true;
+
+      //--- Check SwingBars bars on each side
+      for(int j = 1; j <= SwingBars; j++)
+      {
+         double highLeft  = iHigh(_Symbol, PERIOD_M1, i + j);  // Older bars (left side)
+         double highRight = iHigh(_Symbol, PERIOD_M1, i - j);  // Newer bars (right side)
+
+         if(highI < highLeft || highI < highRight)
+         {
+            isFractal = false;
+            break;
+         }
+      }
+
+      if(isFractal)
+      {
+         Print("Swing High found at bar ", i, " High: ", highI);
+         return highI;
+      }
+   }
+
+   return 0;  // No swing high found
+}
+
+//+------------------------------------------------------------------+
+//| Find the most recent swing low (fractal low)                       |
+//| A fractal low is a bar whose low is lower than the lows of         |
+//| SwingBars bars on each side.                                        |
+//| Returns 0 if no swing low found within lookback range.             |
+//+------------------------------------------------------------------+
+double FindLastSwingLow()
+{
+   //--- Start searching from bar index SwingBars+1 (need SwingBars bars on the right/recent side)
+   int startBar = SwingBars + 1;
+   int endBar   = SwingLookback;
+
+   for(int i = startBar; i <= endBar; i++)
+   {
+      double lowI = iLow(_Symbol, PERIOD_M1, i);
+      bool isFractal = true;
+
+      //--- Check SwingBars bars on each side
+      for(int j = 1; j <= SwingBars; j++)
+      {
+         double lowLeft  = iLow(_Symbol, PERIOD_M1, i + j);  // Older bars (left side)
+         double lowRight = iLow(_Symbol, PERIOD_M1, i - j);  // Newer bars (right side)
+
+         if(lowI > lowLeft || lowI > lowRight)
+         {
+            isFractal = false;
+            break;
+         }
+      }
+
+      if(isFractal)
+      {
+         Print("Swing Low found at bar ", i, " Low: ", lowI);
+         return lowI;
+      }
+   }
+
+   return 0;  // No swing low found
 }
 
 //+------------------------------------------------------------------+
