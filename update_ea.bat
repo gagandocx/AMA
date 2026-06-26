@@ -6,8 +6,8 @@ REM  Place this file in: D:\Automation\EA Testing\EMA\
 REM  Run it to download the latest EA into the same folder.
 REM ============================================================
 
-REM GitHub raw URL for the EA file (main branch)
-SET EA_URL=https://raw.githubusercontent.com/gagandocx/AMA/main/Experts/XAUUSD_EMA_EA.mq5
+REM GitHub raw URL for the EA file (feature branch)
+SET EA_URL=https://raw.githubusercontent.com/gagandocx/AMA/feature/xauusd-ema-ea/Experts/XAUUSD_EMA_EA.mq5
 
 REM Target filename
 SET EA_FILE=XAUUSD_EMA_EA.mq5
