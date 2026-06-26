@@ -20,7 +20,10 @@
 //--- Input parameters
 input int      EMA_Period       = 9;            // EMA Period
 input int      EMA_Shift        = 0;            // EMA Shift
-input double   LotSize          = 0.01;         // Lot size
+input double   MinLotSize       = 0.20;         // Minimum lot size
+input double   LotPerBalance    = 0.20;         // Lots per LotBalanceStep of balance
+input double   LotBalanceStep   = 1000.0;       // Balance increment for lot increase (e.g. every $1000)
+input double   MaxLotSize       = 10.0;         // Maximum lot size cap
 input double   MaxEMADistance   = 50.0;         // Max distance from EMA in points (discount zone filter)
 input int      MagicNumber      = 123456;       // Magic number for order identification
 
@@ -65,7 +68,9 @@ int OnInit()
 
    Print("XAUUSD EMA EA initialized successfully.");
    Print("EMA Period: ", EMA_Period, " | Shift: ", EMA_Shift, " | Method: EMA | Apply: Close");
-   Print("Max EMA Distance: ", MaxEMADistance, " points | Lot Size: ", LotSize);
+   Print("Max EMA Distance: ", MaxEMADistance, " points");
+   Print("Dynamic Lot Sizing: Min=", MinLotSize, " | Per ", LotBalanceStep, " balance=", LotPerBalance, " lots | Max=", MaxLotSize);
+   Print("Initial calculated lot size: ", CalculateLotSize());
 
    return(INIT_SUCCEEDED);
 }
@@ -237,6 +242,42 @@ void CloseOpenPosition()
 }
 
 //+------------------------------------------------------------------+
+//| Calculate dynamic lot size based on account balance                 |
+//| Scales lot size as balance grows for compounding effect             |
+//+------------------------------------------------------------------+
+double CalculateLotSize()
+{
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+
+   //--- Calculate lot size: LotPerBalance lots for every LotBalanceStep in balance
+   double lots = MathFloor(balance / LotBalanceStep) * LotPerBalance;
+
+   //--- Enforce minimum lot size
+   if(lots < MinLotSize)
+      lots = MinLotSize;
+
+   //--- Enforce maximum lot size
+   if(lots > MaxLotSize)
+      lots = MaxLotSize;
+
+   //--- Normalize to broker's lot step
+   double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(lotStep > 0)
+      lots = MathFloor(lots / lotStep) * lotStep;
+
+   //--- Final check against broker minimums and maximums
+   double brokerMinLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double brokerMaxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+
+   if(lots < brokerMinLot)
+      lots = brokerMinLot;
+   if(lots > brokerMaxLot)
+      lots = brokerMaxLot;
+
+   return NormalizeDouble(lots, 2);
+}
+
+//+------------------------------------------------------------------+
 //| Open a BUY position                                                |
 //+------------------------------------------------------------------+
 void OpenBuy(double sl)
@@ -255,7 +296,7 @@ void OpenBuy(double sl)
 
    request.action    = TRADE_ACTION_DEAL;
    request.symbol    = _Symbol;
-   request.volume    = LotSize;
+   request.volume    = CalculateLotSize();
    request.type      = ORDER_TYPE_BUY;
    request.price     = ask;
    request.sl        = sl;
@@ -270,7 +311,8 @@ void OpenBuy(double sl)
    }
    else
    {
-      Print("BUY order opened. Price: ", result.price, " SL: ", sl, " Ticket: ", result.order);
+      Print("BUY order opened. Price: ", result.price, " SL: ", sl,
+            " Lots: ", request.volume, " Ticket: ", result.order);
       tradeOpenedThisBar = true;
    }
 }
@@ -294,7 +336,7 @@ void OpenSell(double sl)
 
    request.action    = TRADE_ACTION_DEAL;
    request.symbol    = _Symbol;
-   request.volume    = LotSize;
+   request.volume    = CalculateLotSize();
    request.type      = ORDER_TYPE_SELL;
    request.price     = bid;
    request.sl        = sl;
@@ -309,7 +351,8 @@ void OpenSell(double sl)
    }
    else
    {
-      Print("SELL order opened. Price: ", result.price, " SL: ", sl, " Ticket: ", result.order);
+      Print("SELL order opened. Price: ", result.price, " SL: ", sl,
+            " Lots: ", request.volume, " Ticket: ", result.order);
       tradeOpenedThisBar = true;
    }
 }
