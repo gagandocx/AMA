@@ -9,7 +9,9 @@
 //| SELL only BELOW EMA: 2 consecutive M1 candles close below EMA      |
 //|       and price is below EMA -> sell on next candle open.          |
 //|       SL = High of previous candle.                                |
-//| TP:   None fixed. Trade closes at current candle close.            |
+//| TP:   None fixed. Trade closes at candle close ONLY if in profit.  |
+//|       If in loss, trade stays open until SL hits or next candle     |
+//|       close is in profit.                                           |
 //| Only 1 trade at a time. Price must be near EMA (discount zone).    |
 //+------------------------------------------------------------------+
 #property copyright "AMA EA"
@@ -103,11 +105,19 @@ void OnTick()
    lastBarTime = currentBarTime;
    tradeOpenedThisBar = false;
 
-   //--- Check if we have an open position - close it at candle close (previous candle just closed)
+   //--- Check if we have an open position - only close at candle close if in profit
    if(HasOpenPosition())
    {
-      CloseOpenPosition();
-      return;  // Wait for next bar to open a new trade
+      if(IsPositionInProfit())
+      {
+         CloseOpenPosition();
+         Print("Position closed at candle close - was in profit.");
+      }
+      else
+      {
+         Print("Position in loss - holding. Waiting for next candle close or SL hit.");
+      }
+      return;  // Either closed in profit or holding in loss - do not open new trade
    }
 
    //--- No open position, check for entry signals
@@ -183,6 +193,30 @@ bool HasOpenPosition()
             PositionGetInteger(POSITION_MAGIC) == MagicNumber)
          {
             return true;
+         }
+      }
+   }
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| Check if the open position is in profit                            |
+//+------------------------------------------------------------------+
+bool IsPositionInProfit()
+{
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket > 0)
+      {
+         if(PositionGetString(POSITION_SYMBOL) == _Symbol &&
+            PositionGetInteger(POSITION_MAGIC) == MagicNumber)
+         {
+            double profit = PositionGetDouble(POSITION_PROFIT);
+            double swap   = PositionGetDouble(POSITION_SWAP);
+            //--- Consider total profit including swap
+            double totalProfit = profit + swap;
+            return (totalProfit > 0);
          }
       }
    }
