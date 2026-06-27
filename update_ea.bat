@@ -128,8 +128,8 @@ type "%LOG_FILE%"
 echo --- End of Log ---
 echo.
 
-REM Check for successful compilation by looking for "0 error(s)" in the log
-findstr /C:"0 error(s)" "%LOG_FILE%" >nul 2>&1
+REM Check for successful compilation by looking for "0 errors," in the log
+findstr /C:"0 errors," "%LOG_FILE%" >nul 2>&1
 IF %ERRORLEVEL% EQU 0 (
     echo.
     echo ============================================================
