@@ -1,12 +1,15 @@
 //+------------------------------------------------------------------+
 //|                                              XAUUSD_EMA_EA.mq5   |
-//|                        XAUUSD M1 EMA Scalper Expert Advisor       |
+//|                    Multi-Symbol EMA Scalper Expert Advisor          |
 //|                                                                    |
-//| Trades XAUUSD on the 1-minute chart using a 9-period EMA.         |
-//| BUY only ABOVE EMA: 2 consecutive M1 candles close above EMA      |
+//| Trades any symbol on any timeframe using a 9-period EMA.           |
+//| Works with forex, metals (XAUUSD), crypto (BTCUSD), and more.     |
+//| Uses ATR-based distance filtering and SL buffer for auto-scaling.  |
+//|                                                                    |
+//| BUY only ABOVE EMA: 2 consecutive candles close above EMA         |
 //|       and price is above EMA -> buy on next candle open.           |
 //|       SL = Most recent swing low (fractal low).                    |
-//| SELL only BELOW EMA: 2 consecutive M1 candles close below EMA      |
+//| SELL only BELOW EMA: 2 consecutive candles close below EMA         |
 //|       and price is below EMA -> sell on next candle open.          |
 //|       SL = Most recent swing high (fractal high).                  |
 //| TP:   None fixed. Trade closes at candle close ONLY if in profit.  |
@@ -16,24 +19,26 @@
 //+------------------------------------------------------------------+
 #property copyright "AMA EA"
 #property link      ""
-#property version   "1.00"
+#property version   "2.00"
 #property strict
 
 //--- Input parameters
-input int      EMA_Period       = 9;            // EMA Period
-input int      EMA_Shift        = 0;            // EMA Shift
-input double   MinLotSize       = 0.20;         // Minimum lot size
-input double   LotPerBalance    = 0.20;         // Lots per LotBalanceStep of balance
-input double   LotBalanceStep   = 1000.0;       // Balance increment for lot increase (e.g. every $1000)
-input double   MaxLotSize       = 10.0;         // Maximum lot size cap
-input double   MaxEMADistance   = 500.0;        // Max distance from EMA in points (discount zone filter, 500 pts = $5.00 for XAUUSD)
-input int      SwingLookback    = 100;          // How many bars back to search for swing high/low
-input int      SwingBars        = 2;            // Number of bars on each side for fractal detection (Williams fractal)
-input double   SLBufferPoints   = 50.0;         // Buffer in points beyond swing level for SL (50 pts = $0.50 for XAUUSD)
-input int      MagicNumber      = 123456;       // Magic number for order identification
+input int      EMA_Period          = 9;            // EMA Period
+input int      EMA_Shift           = 0;            // EMA Shift
+input double   MinLotSize          = 0.20;         // Minimum lot size
+input double   LotPerBalance       = 0.20;         // Lots per LotBalanceStep of balance
+input double   LotBalanceStep      = 1000.0;       // Balance increment for lot increase (e.g. every $1000)
+input double   MaxLotSize          = 10.0;         // Maximum lot size cap
+input double   MaxEMADistanceATR   = 1.5;          // Max distance from EMA as ATR multiplier (discount zone filter)
+input int      ATR_Period          = 14;           // ATR Period for distance/buffer calculations
+input int      SwingLookback       = 100;          // How many bars back to search for swing high/low
+input int      SwingBars           = 2;            // Number of bars on each side for fractal detection (Williams fractal)
+input double   SLBufferATR         = 0.1;          // SL buffer as ATR multiplier (e.g. 0.1 = 10% of ATR)
+input int      MagicNumber         = 123456;       // Magic number for order identification
 
 //--- Global variables
 int            emaHandle;                       // Handle for the EMA indicator
+int            atrHandle;                       // Handle for the ATR indicator
 datetime       lastBarTime;                     // Track last bar time to detect new bars
 bool           tradeOpenedThisBar;             // Prevent multiple opens on same bar
 datetime       lastWaitingLogTime;             // Track last "waiting for new bar" log time
@@ -43,25 +48,19 @@ datetime       lastWaitingLogTime;             // Track last "waiting for new ba
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   //--- Check symbol
-   if(_Symbol != "XAUUSD")
-   {
-      Print("This EA is designed for XAUUSD only. Current symbol: ", _Symbol);
-      return(INIT_FAILED);
-   }
-
-   //--- Check timeframe
-   if(_Period != PERIOD_M1)
-   {
-      Print("This EA is designed for M1 timeframe only. Current timeframe: ", EnumToString(_Period));
-      return(INIT_FAILED);
-   }
-
-   //--- Create EMA indicator handle
-   emaHandle = iMA(_Symbol, PERIOD_M1, EMA_Period, EMA_Shift, MODE_EMA, PRICE_CLOSE);
+   //--- Create EMA indicator handle (uses chart's current timeframe)
+   emaHandle = iMA(_Symbol, _Period, EMA_Period, EMA_Shift, MODE_EMA, PRICE_CLOSE);
    if(emaHandle == INVALID_HANDLE)
    {
       Print("Failed to create EMA indicator handle. Error: ", GetLastError());
+      return(INIT_FAILED);
+   }
+
+   //--- Create ATR indicator handle (uses chart's current timeframe)
+   atrHandle = iATR(_Symbol, _Period, ATR_Period);
+   if(atrHandle == INVALID_HANDLE)
+   {
+      Print("Failed to create ATR indicator handle. Error: ", GetLastError());
       return(INIT_FAILED);
    }
 
@@ -73,9 +72,9 @@ int OnInit()
    tradeOpenedThisBar = false;
    lastWaitingLogTime = 0;
 
-   Print("XAUUSD EMA EA initialized successfully.");
+   Print("Multi-Symbol EMA EA initialized successfully on ", _Symbol, " ", EnumToString(_Period));
    Print("EMA Period: ", EMA_Period, " | Shift: ", EMA_Shift, " | Method: EMA | Apply: Close");
-   Print("Max EMA Distance: ", MaxEMADistance, " points");
+   Print("ATR Period: ", ATR_Period, " | Max EMA Distance: ", MaxEMADistanceATR, "x ATR | SL Buffer: ", SLBufferATR, "x ATR");
    Print("Dynamic Lot Sizing: Min=", MinLotSize, " | Per ", LotBalanceStep, " balance=", LotPerBalance, " lots | Max=", MaxLotSize);
    Print("Initial calculated lot size: ", CalculateLotSize());
 
@@ -94,7 +93,27 @@ void OnDeinit(const int reason)
       IndicatorRelease(emaHandle);
    }
 
-   Print("XAUUSD EMA EA deinitialized. Reason: ", reason);
+   if(atrHandle != INVALID_HANDLE)
+   {
+      IndicatorRelease(atrHandle);
+   }
+
+   Print("Multi-Symbol EMA EA deinitialized. Reason: ", reason);
+}
+
+//+------------------------------------------------------------------+
+//| Get current ATR value                                              |
+//+------------------------------------------------------------------+
+double GetATRValue(int shift = 1)
+{
+   double atrValues[];
+   ArraySetAsSeries(atrValues, true);
+   if(CopyBuffer(atrHandle, 0, shift, 1, atrValues) < 1)
+   {
+      Print("[DIAG] Failed to copy ATR buffer. Error: ", GetLastError());
+      return 0;
+   }
+   return atrValues[0];
 }
 
 //+------------------------------------------------------------------+
@@ -103,7 +122,7 @@ void OnDeinit(const int reason)
 void OnTick()
 {
    //--- Detect new bar
-   datetime currentBarTime = iTime(_Symbol, PERIOD_M1, 0);
+   datetime currentBarTime = iTime(_Symbol, _Period, 0);
    if(currentBarTime == lastBarTime)
    {
       //--- Log "Waiting for new bar..." once per minute
@@ -135,6 +154,14 @@ void OnTick()
       return;  // Either closed in profit or holding in loss - do not open new trade
    }
 
+   //--- Get ATR value for distance and buffer calculations
+   double atrValue = GetATRValue(1);
+   if(atrValue == 0)
+   {
+      Print("[DIAG] ATR value is 0 or unavailable. Skipping this bar.");
+      return;
+   }
+
    //--- No open position, check for entry signals
    //--- Get EMA values for the last 3 completed bars (index 1, 2, 3)
    double emaValues[];
@@ -146,8 +173,8 @@ void OnTick()
    }
 
    //--- Get close prices for the last 2 completed bars
-   double close1 = iClose(_Symbol, PERIOD_M1, 1);  // Most recent completed bar
-   double close2 = iClose(_Symbol, PERIOD_M1, 2);  // Bar before that
+   double close1 = iClose(_Symbol, _Period, 1);  // Most recent completed bar
+   double close2 = iClose(_Symbol, _Period, 2);  // Bar before that
 
    //--- EMA values corresponding to bars
    double ema1 = emaValues[0];  // EMA at bar index 1 (most recent completed)
@@ -167,7 +194,8 @@ void OnTick()
       return;
    }
 
-   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   //--- Calculate max allowed distance from EMA using ATR
+   double maxDistance = MaxEMADistanceATR * atrValue;
 
    //--- Determine signal direction
    bool sellSignal = (close1 < ema1 && close2 < ema2 && currentBid < currentEMA);
@@ -178,14 +206,15 @@ void OnTick()
    if(sellSignal) signalStr = "SELL";
    else if(buySignal) signalStr = "BUY";
 
-   Print("[DIAG] Signal check: close1=", DoubleToString(close1, 2),
-         " ema1=", DoubleToString(ema1, 2),
-         " close2=", DoubleToString(close2, 2),
-         " ema2=", DoubleToString(ema2, 2),
+   Print("[DIAG] Signal check: close1=", DoubleToString(close1, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)),
+         " ema1=", DoubleToString(ema1, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)),
+         " close2=", DoubleToString(close2, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)),
+         " ema2=", DoubleToString(ema2, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)),
          " -> ", signalStr);
-   Print("[DIAG]   CurrentAsk=", DoubleToString(currentAsk, 2),
-         " CurrentBid=", DoubleToString(currentBid, 2),
-         " CurrentEMA=", DoubleToString(currentEMA, 2));
+   Print("[DIAG]   CurrentAsk=", DoubleToString(currentAsk, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)),
+         " CurrentBid=", DoubleToString(currentBid, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)),
+         " CurrentEMA=", DoubleToString(currentEMA, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)),
+         " ATR=", DoubleToString(atrValue, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)));
 
    if(!sellSignal && !buySignal)
    {
@@ -197,11 +226,11 @@ void OnTick()
    if(sellSignal)
    {
       //--- Check discount zone: price should be near EMA (not too far below)
-      double distanceFromEMA = MathAbs(currentBid - currentEMA) / point;
-      Print("[DIAG] SELL discount zone check: Distance from EMA = ", DoubleToString(distanceFromEMA, 1),
-            " points (max allowed: ", DoubleToString(MaxEMADistance, 1), ")");
+      double distanceFromEMA = MathAbs(currentBid - currentEMA);
+      Print("[DIAG] SELL discount zone check: Distance from EMA = ", DoubleToString(distanceFromEMA, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)),
+            " (max allowed: ", DoubleToString(maxDistance, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)), " = ", MaxEMADistanceATR, "x ATR)");
 
-      if(distanceFromEMA <= MaxEMADistance)
+      if(distanceFromEMA <= maxDistance)
       {
          Print("[DIAG] Discount zone PASSED. Looking for swing high for SL...");
          double sl = FindLastSwingHigh();  // SL = Most recent swing high (fractal high)
@@ -211,15 +240,18 @@ void OnTick()
          }
          else
          {
-            sl += SLBufferPoints * point;  // Add buffer above swing high
-            Print("[DIAG] Opening SELL with SL=", DoubleToString(sl, 2));
+            double slBuffer = SLBufferATR * atrValue;
+            sl += slBuffer;  // Add ATR-based buffer above swing high
+            Print("[DIAG] Opening SELL with SL=", DoubleToString(sl, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)),
+                  " (buffer=", DoubleToString(slBuffer, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)), ")");
             OpenSell(sl);
          }
       }
       else
       {
          Print("[DIAG] Discount zone FAILED. Price too far from EMA. Distance=",
-               DoubleToString(distanceFromEMA, 1), " > MaxAllowed=", DoubleToString(MaxEMADistance, 1),
+               DoubleToString(distanceFromEMA, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)),
+               " > MaxAllowed=", DoubleToString(maxDistance, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)),
                ". Trade SKIPPED.");
       }
    }
@@ -227,11 +259,11 @@ void OnTick()
    else if(buySignal)
    {
       //--- Check discount zone: price should be near EMA (not too far above)
-      double distanceFromEMA = MathAbs(currentAsk - currentEMA) / point;
-      Print("[DIAG] BUY discount zone check: Distance from EMA = ", DoubleToString(distanceFromEMA, 1),
-            " points (max allowed: ", DoubleToString(MaxEMADistance, 1), ")");
+      double distanceFromEMA = MathAbs(currentAsk - currentEMA);
+      Print("[DIAG] BUY discount zone check: Distance from EMA = ", DoubleToString(distanceFromEMA, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)),
+            " (max allowed: ", DoubleToString(maxDistance, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)), " = ", MaxEMADistanceATR, "x ATR)");
 
-      if(distanceFromEMA <= MaxEMADistance)
+      if(distanceFromEMA <= maxDistance)
       {
          Print("[DIAG] Discount zone PASSED. Looking for swing low for SL...");
          double sl = FindLastSwingLow();  // SL = Most recent swing low (fractal low)
@@ -241,15 +273,18 @@ void OnTick()
          }
          else
          {
-            sl -= SLBufferPoints * point;  // Add buffer below swing low
-            Print("[DIAG] Opening BUY with SL=", DoubleToString(sl, 2));
+            double slBuffer = SLBufferATR * atrValue;
+            sl -= slBuffer;  // Subtract ATR-based buffer below swing low
+            Print("[DIAG] Opening BUY with SL=", DoubleToString(sl, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)),
+                  " (buffer=", DoubleToString(slBuffer, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)), ")");
             OpenBuy(sl);
          }
       }
       else
       {
          Print("[DIAG] Discount zone FAILED. Price too far from EMA. Distance=",
-               DoubleToString(distanceFromEMA, 1), " > MaxAllowed=", DoubleToString(MaxEMADistance, 1),
+               DoubleToString(distanceFromEMA, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)),
+               " > MaxAllowed=", DoubleToString(maxDistance, (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS)),
                ". Trade SKIPPED.");
       }
    }
@@ -272,14 +307,14 @@ double FindLastSwingHigh()
 
    for(int i = startBar; i <= endBar; i++)
    {
-      double highI = iHigh(_Symbol, PERIOD_M1, i);
+      double highI = iHigh(_Symbol, _Period, i);
       bool isFractal = true;
 
       //--- Check SwingBars bars on each side - STRICT greater than required
       for(int j = 1; j <= SwingBars; j++)
       {
-         double highLeft  = iHigh(_Symbol, PERIOD_M1, i + j);  // Older bars (left side)
-         double highRight = iHigh(_Symbol, PERIOD_M1, i - j);  // Newer bars (right side)
+         double highLeft  = iHigh(_Symbol, _Period, i + j);  // Older bars (left side)
+         double highRight = iHigh(_Symbol, _Period, i - j);  // Newer bars (right side)
 
          if(highI <= highLeft || highI <= highRight)
          {
@@ -293,11 +328,11 @@ double FindLastSwingHigh()
          //--- Log detailed info about the fractal found
          Print("=== SWING HIGH FOUND ===");
          Print("  Bar index: ", i, " | High: ", highI);
-         Print("  Time: ", TimeToString(iTime(_Symbol, PERIOD_M1, i)));
+         Print("  Time: ", TimeToString(iTime(_Symbol, _Period, i)));
          for(int j = 1; j <= SwingBars; j++)
          {
-            Print("  Left[", j, "] bar ", i+j, " high=", iHigh(_Symbol, PERIOD_M1, i+j),
-                  " | Right[", j, "] bar ", i-j, " high=", iHigh(_Symbol, PERIOD_M1, i-j));
+            Print("  Left[", j, "] bar ", i+j, " high=", iHigh(_Symbol, _Period, i+j),
+                  " | Right[", j, "] bar ", i-j, " high=", iHigh(_Symbol, _Period, i-j));
          }
          Print("========================");
          return highI;
@@ -324,14 +359,14 @@ double FindLastSwingLow()
 
    for(int i = startBar; i <= endBar; i++)
    {
-      double lowI = iLow(_Symbol, PERIOD_M1, i);
+      double lowI = iLow(_Symbol, _Period, i);
       bool isFractal = true;
 
       //--- Check SwingBars bars on each side - STRICT less than required
       for(int j = 1; j <= SwingBars; j++)
       {
-         double lowLeft  = iLow(_Symbol, PERIOD_M1, i + j);  // Older bars (left side)
-         double lowRight = iLow(_Symbol, PERIOD_M1, i - j);  // Newer bars (right side)
+         double lowLeft  = iLow(_Symbol, _Period, i + j);  // Older bars (left side)
+         double lowRight = iLow(_Symbol, _Period, i - j);  // Newer bars (right side)
 
          if(lowI >= lowLeft || lowI >= lowRight)
          {
@@ -345,11 +380,11 @@ double FindLastSwingLow()
          //--- Log detailed info about the fractal found
          Print("=== SWING LOW FOUND ===");
          Print("  Bar index: ", i, " | Low: ", lowI);
-         Print("  Time: ", TimeToString(iTime(_Symbol, PERIOD_M1, i)));
+         Print("  Time: ", TimeToString(iTime(_Symbol, _Period, i)));
          for(int j = 1; j <= SwingBars; j++)
          {
-            Print("  Left[", j, "] bar ", i+j, " low=", iLow(_Symbol, PERIOD_M1, i+j),
-                  " | Right[", j, "] bar ", i-j, " low=", iLow(_Symbol, PERIOD_M1, i-j));
+            Print("  Left[", j, "] bar ", i+j, " low=", iLow(_Symbol, _Period, i+j),
+                  " | Right[", j, "] bar ", i-j, " low=", iLow(_Symbol, _Period, i-j));
          }
          Print("========================");
          return lowI;
@@ -528,8 +563,8 @@ void OpenBuy(double sl)
    {
       Print("BUY order opened. Price: ", result.price, " SL: ", sl,
             " Lots: ", request.volume, " Ticket: ", result.order);
-      Print("  >> SL placed at swing low level (with ", SLBufferPoints, " pts buffer). Entry=", result.price, " SL=", sl,
-            " Distance=", NormalizeDouble(MathAbs(result.price - sl) / SymbolInfoDouble(_Symbol, SYMBOL_POINT), 1), " pts");
+      Print("  >> SL placed at swing low level (with ATR buffer). Entry=", result.price, " SL=", sl,
+            " Distance=", NormalizeDouble(MathAbs(result.price - sl), digits));
       tradeOpenedThisBar = true;
    }
 }
@@ -570,8 +605,8 @@ void OpenSell(double sl)
    {
       Print("SELL order opened. Price: ", result.price, " SL: ", sl,
             " Lots: ", request.volume, " Ticket: ", result.order);
-      Print("  >> SL placed at swing high level (with ", SLBufferPoints, " pts buffer). Entry=", result.price, " SL=", sl,
-            " Distance=", NormalizeDouble(MathAbs(sl - result.price) / SymbolInfoDouble(_Symbol, SYMBOL_POINT), 1), " pts");
+      Print("  >> SL placed at swing high level (with ATR buffer). Entry=", result.price, " SL=", sl,
+            " Distance=", NormalizeDouble(MathAbs(sl - result.price), digits));
       tradeOpenedThisBar = true;
    }
 }
