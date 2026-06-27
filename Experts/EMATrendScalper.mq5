@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|                                              XAUUSD_EMA_EA.mq5   |
+//|                                              EMATrendScalper.mq5   |
 //|                    Multi-Symbol EMA Scalper Expert Advisor          |
 //|                                                                    |
 //| Trades any symbol on any timeframe using a 9-period EMA.           |

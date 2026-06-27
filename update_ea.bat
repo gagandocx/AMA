@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================
-REM  Update & Compile XAUUSD_EMA_EA.mq5 from GitHub
+REM  Update & Compile EMATrendScalper.mq5 from GitHub
 REM
 REM  This script:
 REM    1. Downloads the latest EA from GitHub
@@ -9,17 +9,17 @@ REM    3. Compiles it using MetaEditor
 REM ============================================================
 
 REM GitHub raw URL for the EA file (feature branch)
-SET EA_URL=https://raw.githubusercontent.com/gagandocx/AMA/feature/xauusd-ema-ea/Experts/XAUUSD_EMA_EA.mq5
+SET EA_URL=https://raw.githubusercontent.com/gagandocx/AMA/feature/xauusd-ema-ea/Experts/EMATrendScalper.mq5
 
 REM Target filename
-SET EA_FILE=XAUUSD_EMA_EA.mq5
+SET EA_FILE=EMATrendScalper.mq5
 
 REM MT5 Experts/Advisors folder
 SET MT5_DEST=C:\Users\gagan\AppData\Roaming\MetaQuotes\Terminal\930119AA53207C8778B41171FBFFB46F\MQL5\Experts\Advisors
 
 echo.
 echo ============================================================
-echo   XAUUSD EMA EA Updater + Compiler
+echo   EMATrendScalper EA Updater + Compiler
 echo ============================================================
 echo.
 
