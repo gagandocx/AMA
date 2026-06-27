@@ -129,7 +129,7 @@ echo --- End of Log ---
 echo.
 
 REM Check for successful compilation by looking for "0 errors," in the log
-findstr /C:"0 errors," "%LOG_FILE%" >nul 2>&1
+type "%LOG_FILE%" | findstr /C:"0 errors," >nul 2>&1
 IF %ERRORLEVEL% EQU 0 (
     echo.
     echo ============================================================
@@ -145,7 +145,7 @@ REM If we get here, there were compilation errors
 echo.
 echo [ERROR] Compilation failed! Errors found in log:
 echo.
-findstr /I "error" "%LOG_FILE%"
+type "%LOG_FILE%" | findstr /I "error"
 echo.
 echo         Log file: %LOG_FILE%
 pause
