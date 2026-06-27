@@ -87,24 +87,66 @@ exit /b 1
 echo [OK] Found MetaEditor: %METAEDITOR%
 echo.
 
+REM --- Step 2.5: Cleanup old EA name if present ---
+IF EXIST "%MT5_DEST%\XAUUSD_EMA_EA.mq5" (
+    echo [CLEANUP] Removing old XAUUSD_EMA_EA.mq5 ...
+    del "%MT5_DEST%\XAUUSD_EMA_EA.mq5"
+)
+IF EXIST "%MT5_DEST%\XAUUSD_EMA_EA.ex5" (
+    echo [CLEANUP] Removing old XAUUSD_EMA_EA.ex5 ...
+    del "%MT5_DEST%\XAUUSD_EMA_EA.ex5"
+)
+
 REM --- Step 3: Compile the EA ---
 echo [3/3] Compiling %EA_FILE% ...
 echo.
 
+SET "LOG_FILE=%MT5_DEST%\EMATrendScalper.log"
+
+REM Delete old log file if it exists
+IF EXIST "%LOG_FILE%" del "%LOG_FILE%"
+
+REM Run MetaEditor compile (ignore ERRORLEVEL - MetaEditor returns non-zero even on success)
 "%METAEDITOR%" /compile:"%MT5_DEST%\%EA_FILE%" /log
 
-IF %ERRORLEVEL% NEQ 0 (
+REM Wait a moment for the log file to be written
+timeout /t 2 /nobreak >nul
+
+REM Check if log file was created
+IF NOT EXIST "%LOG_FILE%" (
     echo.
-    echo [ERROR] Compilation failed! Check the log for details.
-    echo         Log file: %MT5_DEST%\%~n0.log
+    echo [ERROR] Compilation log file not found!
+    echo         Expected: %LOG_FILE%
+    echo         MetaEditor may not have run correctly.
     pause
     exit /b 1
 )
 
+REM Display the compilation log
+echo --- Compilation Log ---
+type "%LOG_FILE%"
+echo --- End of Log ---
 echo.
-echo ============================================================
-echo   [SUCCESS] EA updated and compiled!
-echo   File: %MT5_DEST%\%EA_FILE%
-echo ============================================================
+
+REM Check for successful compilation by looking for "0 error(s)" in the log
+findstr /C:"0 error(s)" "%LOG_FILE%" >nul 2>&1
+IF %ERRORLEVEL% EQU 0 (
+    echo.
+    echo ============================================================
+    echo   [SUCCESS] EA updated and compiled!
+    echo   File: %MT5_DEST%\%EA_FILE%
+    echo ============================================================
+    echo.
+    pause
+    exit /b 0
+)
+
+REM If we get here, there were compilation errors
 echo.
+echo [ERROR] Compilation failed! Errors found in log:
+echo.
+findstr /I "error" "%LOG_FILE%"
+echo.
+echo         Log file: %LOG_FILE%
 pause
+exit /b 1
